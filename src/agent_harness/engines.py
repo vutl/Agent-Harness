@@ -7,12 +7,14 @@ takes over. Claude roles may run through an Anthropic-compatible gateway.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import glob
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -96,6 +98,29 @@ def accounts(settings: Settings) -> list[dict[str, str]]:
         if Path(home, "auth.json").exists():
             result.append({"name": account["name"], "codex_home": home})
     return result
+
+
+def run_cli(command: list[str], prompt: str, *, timeout: int, cwd: Path | None = None,
+            env: dict[str, str] | None = None) -> tuple[str, str, int]:
+    """Run a vendor CLI with a hard wall-clock limit: (stdout, stderr, exit code).
+
+    The CLI runs in its own process group and the whole group is killed on
+    timeout. ``subprocess.run(timeout=...)`` only kills the direct child, and a
+    grandchild that keeps the pipes open makes it wait indefinitely.
+    """
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, cwd=cwd, env=env, start_new_session=True)
+    try:
+        out, err = process.communicate(prompt, timeout=timeout)
+        return out or "", err or "", process.returncode
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+        try:
+            out, err = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        return out or "", f"TIMEOUT after {timeout}s\n{err or ''}", -1
 
 
 # --- shared state (cooldowns, call log) -------------------------------------
@@ -242,11 +267,8 @@ def run_codex(settings: Settings, role: str, prompt: str, *, cwd: Path, log_dir:
         command = codex_command(settings, config, cwd=cwd, out_file=out_file, schema=schema, add_dirs=add_dirs or [])
         started = time.time()
         env = {**os.environ, "CODEX_HOME": account["codex_home"]}
-        try:
-            completed = subprocess.run(command, input=prompt, text=True, capture_output=True, env=env, timeout=timeout)
-            output, code = (completed.stdout or "") + "\n" + (completed.stderr or ""), completed.returncode
-        except subprocess.TimeoutExpired as exc:
-            output, code = f"TIMEOUT after {timeout}s\n{exc.stdout or ''}{exc.stderr or ''}", -1
+        out, err, code = run_cli(command, prompt, timeout=timeout, env=env)
+        output = out + "\n" + err
         log_path.write_text(output, encoding="utf-8")
         text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
         seconds = round(time.time() - started, 1)
@@ -318,12 +340,7 @@ def run_claude(settings: Settings, role: str, prompt: str, *, cwd: Path, log_dir
     account = f"gateway:{gateway}" if gateway else "claude"
     env = gateway_env(settings, gateway) if gateway else None
     started = time.time()
-    try:
-        completed = subprocess.run(command, input=prompt, text=True, capture_output=True, cwd=cwd,
-                                   timeout=timeout, env=env)
-        text, err, code = completed.stdout or "", completed.stderr or "", completed.returncode
-    except subprocess.TimeoutExpired as exc:
-        text, err, code = str(exc.stdout or ""), f"TIMEOUT after {timeout}s", -1
+    text, err, code = run_cli(command, prompt, timeout=timeout, cwd=cwd, env=env)
     log_path.write_text(f"{err}\n---\n{text}", encoding="utf-8")
     seconds = round(time.time() - started, 1)
     # Some limits arrive as a normal short reply with exit code 0.

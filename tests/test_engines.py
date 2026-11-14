@@ -60,3 +60,19 @@ def test_default_account_is_codex_home(settings, monkeypatch, tmp_path):
     (home / "auth.json").write_text("{}")
     monkeypatch.setenv("CODEX_HOME", str(home))
     assert engines.accounts(settings) == [{"name": "default", "codex_home": str(home)}]
+
+
+def test_run_cli_kills_the_whole_process_group_on_timeout(tmp_path):
+    import time
+
+    # The child exits at once but leaves a grandchild holding the output pipe open.
+    script = "sleep 30 & echo started"
+    started = time.time()
+    out, err, code = engines.run_cli(["sh", "-c", script], "", timeout=2)
+    assert time.time() - started < 20
+    assert code == -1 and "TIMEOUT after 2s" in err
+
+
+def test_run_cli_returns_output_and_code():
+    out, err, code = engines.run_cli(["sh", "-c", "cat; echo oops >&2; exit 3"], "hello", timeout=10)
+    assert (out, err.strip(), code) == ("hello", "oops", 3)
