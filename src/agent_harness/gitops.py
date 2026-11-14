@@ -6,11 +6,14 @@ push or merge it checks the branch for symlinks and protected paths, and a local
 merge is refused when the branch adds a path that exists, untracked or ignored,
 in the main checkout: git would replace that local directory and its contents
 would be lost.
+A worktree with uncommitted changes or commits not on the base branch or a remote
+branch is not removed without force.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,16 +66,62 @@ def create_worktree(settings: Settings, run: str, base_ref: str = "HEAD") -> tup
     return worktree, base, branch
 
 
-def remove_worktree(settings: Settings, worktree: Path, branch: str | None = None) -> None:
+def unsaved_work(settings: Settings, worktree: Path, branch: str | None = None) -> list[str]:
+    """Reasons removing this worktree would lose uncommitted or unmerged/unpushed work."""
+    try:
+        changes = changed_paths(worktree)
+    except subprocess.CalledProcessError as exc:
+        raise GitError(f"git status: {(exc.stderr or '').strip()}") from exc
+    links = {path.strip("/") for path in settings.section("worktree").get("link") or []}
+    paths = [path for _status, path in changes
+             if not (path.strip("/") in links and (worktree / path).is_symlink())]
+    reasons = []
+    if paths:
+        preview = ", ".join(paths[:3]) + (", …" if len(paths) > 3 else "")
+        reasons.append(f"{len(paths)} uncommitted change{'s' if len(paths) != 1 else ''} ({preview})")
+
+    base = settings.section("git").get("base", "main")
+    base_ref = f"refs/heads/{base}"
+    branch_refs = [f"refs/heads/{branch}"] if branch else []
+    refs = git("for-each-ref", "--format=%(refname)", base_ref, *branch_refs, cwd=worktree).splitlines()
+    tips = ["HEAD", *(ref for ref in branch_refs if ref in refs)]
+    commits = git("log", "--format=%h %s", *tips, "--not",
+                  *([base_ref] if base_ref in refs else []), "--remotes", cwd=worktree).splitlines()
+    if commits:
+        reason = f"{len(commits)} commit{'s' if len(commits) != 1 else ''} not merged or pushed ({commits[0]})"
+        if base_ref not in refs:
+            reason += f" — base branch '{base}' not found"
+        reasons.append(reason)
+    return reasons
+
+
+def remove_worktree(settings: Settings, worktree: Path, branch: str | None = None, *,
+                    delete_branch: bool = True, force: bool = False) -> None:
     root = _root(settings)
+    if not force:
+        reasons = unsaved_work(settings, worktree, branch)
+        if reasons:
+            raise GitError("; ".join(reasons))
     # Unlink runtime links first so nothing can follow them while removing.
+    unlinked = []
     for relative in settings.section("worktree").get("link") or []:
         target = worktree / relative
         if target.is_symlink():
+            saved = os.readlink(target)
             target.unlink()
-    git("worktree", "remove", "--force", str(worktree), cwd=root, check=False)
-    if branch:
-        git("branch", "-D", branch, cwd=root, check=False)
+            unlinked.append((target, saved))
+    if force:
+        git("worktree", "remove", "--force", str(worktree), cwd=root, check=False)
+    else:
+        try:
+            git("worktree", "remove", str(worktree), cwd=root)
+        except GitError:
+            for target, saved in unlinked:
+                if not target.exists() and not target.is_symlink():
+                    target.symlink_to(saved)
+            raise
+    if branch and delete_branch:
+        git("branch", "-D", branch, cwd=root, check=not force)
 
 
 # --- staging -----------------------------------------------------------------

@@ -21,7 +21,7 @@ ah ship <run>                         # push branch, open PR, wait for CI (auto-
 ah review --pr 12 [--post]            # review a PR; --post comments on it
 ah review                             # review the current branch/working tree against base
 ah merge <run>                        # guarded local merge (no remote, or the user asked)
-ah clean <run> | --all                # remove finished worktrees (logs kept)
+ah clean <run> | --all [--force]      # remove finished worktrees (logs kept); skips uncommitted or unmerged/unpushed work unless --force
 ah run <role> "prompt"                # one call: scout, coder, reviewer, researcher, ...
 ah status                             # account cooldowns, roles, recent calls
 ```

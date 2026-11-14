@@ -9,7 +9,7 @@
   ah ship <run>                  push, open PR, wait for CI (fix failures), review, merge per policy
   ah review [--pr N] [--post]    review a PR (or the current branch against base)
   ah merge <run>                 guarded local merge of a run's branch
-  ah runs | ah clean [<run>|--all]
+  ah runs | ah clean [<run>|--all] [--force]
   ah skills install [--project]  install the head-agent skill for Claude Code and Codex
 """
 
@@ -272,14 +272,21 @@ def cmd_clean(args: argparse.Namespace, settings: Settings) -> int:
     _need_root(settings)
     runs = sorted((settings.state_dir / "runs").glob("*/run.json"))
     targets = [p for p in runs if args.all or p.parent.name in args.runs]
+    skipped = False
     for path in targets:
         meta = json.loads(path.read_text(encoding="utf-8"))
         if meta.get("worktree") and Path(meta["worktree"]).exists():
             keep_branch = bool(meta.get("pr")) and not args.delete_branches
-            gitops.remove_worktree(settings, Path(meta["worktree"]), None if keep_branch else meta.get("branch"))
+            try:
+                gitops.remove_worktree(settings, Path(meta["worktree"]), meta.get("branch"),
+                                      delete_branch=not keep_branch, force=args.force)
+            except gitops.GitError as exc:
+                print(f"skipped {meta.get('id', path.parent.name)}: {exc} (use --force to remove anyway)")
+                skipped = True
+                continue
             print(f"removed worktree {meta['worktree']}")
     gitops.git("worktree", "prune", cwd=settings.root, check=False)
-    return 0
+    return 1 if skipped else 0
 
 
 def cmd_skills(args: argparse.Namespace, settings: Settings) -> int:
@@ -370,6 +377,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("runs", nargs="*")
     p.add_argument("--all", action="store_true")
     p.add_argument("--delete-branches", action="store_true", help="also delete branches that have a PR")
+    p.add_argument("--force", action="store_true",
+                   help="remove even with uncommitted changes or commits that are not merged or pushed")
     p.set_defaults(func=cmd_clean)
 
     p = sub.add_parser("skills", help="install the head-agent skill")
