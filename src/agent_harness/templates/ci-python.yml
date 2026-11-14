@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          if [ -f uv.lock ]; then uv sync --all-extras --dev
+          elif [ -f pyproject.toml ]; then uv pip install --system -e ".[dev]" || uv pip install --system -e .
+          elif [ -f requirements.txt ]; then uv pip install --system -r requirements.txt; fi
+          uv pip install --system pytest || true
+      - name: Test
+        run: if [ -f uv.lock ]; then uv run pytest -q; else python -m pytest -q; fi

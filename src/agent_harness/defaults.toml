@@ -1,0 +1,145 @@
+# Built-in defaults. Override any key in ~/.config/agent-harness/config.toml
+# (your machine: accounts, gateways, models) or <repo>/.agent-harness/config.toml
+# (one project: rules, tests, protected paths, git policy).
+
+[binaries]
+# "auto": PATH first, then the VS Code extension bundles.
+codex = "auto"
+claude = "auto"
+
+# Codex accounts rotate least-recently-used and cool down on usage limits.
+# With no [[accounts]] the default CODEX_HOME (~/.codex) is the only account.
+# Example (user config):
+#   [[accounts]]
+#   name = "work"
+#   codex_home = "~/.codex-work"
+
+[codex]
+# Skip the user's interactive Codex config (plugins, service tier) and enable
+# only the MCP servers a role lists in `mcp`.
+ignore_user_config = true
+
+[project]
+name = ""
+# Files every agent reads first (relative to the repository root).
+rules = ["AGENTS.md", "CLAUDE.md"]
+# Extra rules inlined into every prompt.
+notes = ""
+
+[tests]
+# Runs from the worktree root. Placeholders: {root} = main checkout (quoted).
+command = ""
+timeout = 1800
+
+[worktree]
+# Untracked runtime inputs the tests need, symlinked from the main checkout
+# into each worktree (e.g. ".env", "node_modules"). They are never staged.
+link = []
+
+[safety]
+# Never staged, committed, pushed or merged. Globs match the path or any parent.
+protect = [".env", "*.env", "*.pem", "*.key", "*.p12", "id_rsa*", "node_modules", ".agent-harness/state"]
+# Files larger than this are not staged automatically.
+max_file_mb = 5
+
+[git]
+base = "main"
+remote = "origin"
+branch_prefix = "harness/"
+# "manual": open a PR (or leave the branch) and wait for a human.
+# "auto": merge once CI passes and the reviewer approves.
+merge = "manual"
+# Rounds of "CI failed → executor fixes → push" before giving up.
+fix_ci_rounds = 2
+
+[pipeline]
+max_rounds = 2
+research = false
+
+# Roles. engine = "codex" | "claude"; `fallback` runs when the engine is out of
+# quota. `web = true` gives the role live web search.
+[roles.researcher]
+engine = "codex"
+model = "gpt-6.1-sol"
+sandbox = "read-only"
+effort = "high"
+web = true
+fallback = "researcher_claude"
+
+[roles.researcher_claude]
+engine = "claude"
+model = "sonnet"
+permission_mode = "plan"
+web = true
+
+[roles.planner]
+engine = "claude"
+model = "fable"
+permission_mode = "plan"
+web = true
+fallback = "planner_codex"
+
+[roles.planner_codex]
+engine = "codex"
+model = "gpt-6.1-sol"
+sandbox = "read-only"
+effort = "high"
+web = true
+
+[roles.plan_review]
+engine = "codex"
+model = "gpt-6-astra"
+sandbox = "read-only"
+effort = "high"
+fallback = "reviewer_claude"
+
+[roles.executor]
+engine = "codex"
+model = "gpt-6.1-sol"
+sandbox = "workspace-write"
+effort = "high"
+fallback = "coder_claude"
+
+[roles.coder]
+engine = "codex"
+model = "gpt-6-luna"
+sandbox = "workspace-write"
+effort = "medium"
+fallback = "coder_claude"
+
+[roles.coder_claude]
+engine = "claude"
+model = "sonnet"
+permission_mode = "acceptEdits"
+
+[roles.reviewer]
+engine = "codex"
+model = "gpt-6-astra"
+sandbox = "read-only"
+effort = "high"
+fallback = "reviewer_claude"
+
+[roles.reviewer_claude]
+engine = "claude"
+model = "sonnet"
+permission_mode = "plan"
+
+[roles.scout]
+engine = "claude"
+model = "haiku"
+permission_mode = "plan"
+
+[claude_tool_sets]
+# Tools a gateway role (dontAsk mode) may use; everything else is refused.
+read = ["Read", "Glob", "Grep", "Bash(ls:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git diff:*)",
+        "Bash(git status:*)"]
+edit = ["Read", "Glob", "Grep", "Edit", "MultiEdit", "Write", "Bash(ls:*)", "Bash(git log:*)", "Bash(git show:*)",
+        "Bash(git diff:*)", "Bash(git status:*)", "Bash(python:*)", "Bash(python3:*)", "Bash(pytest:*)",
+        "Bash(npm test:*)", "Bash(npm run:*)", "Bash(npx tsc:*)"]
+web = ["WebSearch", "WebFetch"]
+
+# Anthropic-compatible gateways for `claude -p` (user config), e.g.:
+#   [gateways.router]
+#   base_url = "http://127.0.0.1:20128"
+#   token_env = "ROUTER_API_KEY"        # or token_file + token_key (a KEY=value file)
+# and a role with gateway = "router", tool_set = "read" | "edit".

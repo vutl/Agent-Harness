@@ -1,0 +1,40 @@
+# Agent harness settings for this repository (committed). Machine-specific
+# settings (Codex accounts, gateways, model choices) belong in
+# ~/.config/agent-harness/config.toml. Defaults: `ah doctor` lists the layers.
+
+[project]
+name = "{name}"
+# Rule files every agent reads first.
+rules = ["AGENTS.md", "CLAUDE.md"]
+# Extra rules inlined into every prompt.
+notes = ""
+
+[tests]
+# Runs from the worktree root; {root} is the main checkout (quoted).
+command = "{tests}"
+timeout = 1800
+
+[worktree]
+# Untracked runtime inputs to symlink into each worktree (never staged), e.g.
+# link = [".env", "node_modules"]
+link = []
+
+[safety]
+# Added to the built-in protected paths (.env, keys, node_modules, ...).
+protect_extra = []
+max_file_mb = 5
+
+[git]
+base = "main"
+# "manual": open a PR and wait for you. "auto": merge after CI + agent review pass.
+merge = "manual"
+fix_ci_rounds = 2
+
+[pipeline]
+max_rounds = 2
+# Run a web research step before planning.
+research = false
+
+# Override a role for this project only, e.g.:
+# [roles.executor]
+# model = "gpt-6-luna"

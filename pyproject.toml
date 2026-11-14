@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "Plan, code, test, review and ship changes with Codex and Claude Code agents, across any repository."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+ah = "agent_harness.cli:main"
+agent-harness = "agent_harness.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_harness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent_harness", "conftest"]
