@@ -142,8 +142,11 @@ def make_plan(settings: Settings, task: str, *, run: Run, planner: str, max_roun
             review_call = run_role(settings, "plan_review", prompt("plan_review", settings, task=task, plan=plan),
                                    schema=VERDICT_SCHEMA, log_dir=run.dir, wait_for_quota=False)
         except QuotaExhausted as exc:
-            run.log(f"plan review unavailable ({exc}); using the unreviewed plan")
-            break
+            # An unreviewed plan is not executed. It is saved so the head agent can
+            # review it, then resume with `ah do --plan <run>/plan.md`.
+            run.save("plan.md", plan)
+            run.log(f"plan review unavailable ({exc}); plan saved unreviewed, stopping")
+            return None
         review = parse_verdict(review_call.text)
         run.save(f"plan_review.r{round_number}.json", json.dumps(review, indent=1))
         issues = blocking(review)
@@ -234,6 +237,13 @@ def pipeline(settings: Settings, task: str, *, plan_text: str | None = None, run
             run.meta(status="no_plan")
             run.finish()
             return run, "no_plan"
-    status = execute(settings, run=run, task=task, plan=plan, executor=executor, max_rounds=rounds,
-                     tests_override=tests_override)
+    try:
+        status = execute(settings, run=run, task=task, plan=plan, executor=executor, max_rounds=rounds,
+                         tests_override=tests_override)
+    except QuotaExhausted as exc:
+        # Keep the worktree and everything done so far; the head agent resumes later.
+        run.meta(status="quota")
+        run.log(f"stopped: no model available ({exc}); worktree and logs kept")
+        run.finish()
+        return run, "quota"
     return run, status

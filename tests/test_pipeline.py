@@ -69,3 +69,33 @@ def test_research_brief_reaches_the_planner(repo, monkeypatch):
     monkeypatch.setattr(pipeline, "run_role", run_role)
     pipeline.pipeline(settings, "task", run_id="t3", with_research=True)
     assert "BRIEF: use API v2" in prompts["planner"]
+
+
+def test_unreviewed_plan_is_not_executed(repo, monkeypatch):
+    settings = config.load(repo)
+    calls = []
+
+    def run_role(settings, role, prompt, **kwargs):
+        calls.append(role)
+        if role == "plan_review":
+            raise engines.QuotaExhausted("all accounts cooling down")
+        return engines.CallResult(ok=True, text="plan", role=role, model="f", account="t", seconds=0, log_path=None)
+
+    monkeypatch.setattr(pipeline, "run_role", run_role)
+    run, status = pipeline.pipeline(settings, "task", run_id="t4")
+    assert status == "no_plan" and "executor" not in calls
+    assert (run.dir / "plan.md").read_text() == "plan"
+
+
+def test_quota_during_execution_keeps_the_worktree(repo, monkeypatch):
+    settings = config.load(repo)
+
+    def run_role(settings, role, prompt, **kwargs):
+        raise engines.QuotaExhausted("no model")
+
+    monkeypatch.setattr(pipeline, "run_role", run_role)
+    run, status = pipeline.pipeline(settings, "task", plan_text="plan", run_id="t5")
+    meta = pipeline.load_run(settings, "t5")
+    assert status == "quota" and meta["status"] == "quota"
+    from pathlib import Path
+    assert Path(meta["worktree"]).exists()
