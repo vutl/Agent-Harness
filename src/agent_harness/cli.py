@@ -158,6 +158,23 @@ def cmd_status(args: argparse.Namespace, settings: Settings) -> int:
         print(f"  {role:18s} {config.get('engine', 'codex'):6s} {config.get('model', ''):28s} {extra}")
     log = call_log_path(settings)
     if log.exists():
+        today = time.strftime("%Y-%m-%d")
+        totals: dict[tuple[str, str], list[float]] = {}
+        for raw in log.read_text(encoding="utf-8").splitlines():
+            e = json.loads(raw)
+            if not e["ts"].startswith(today):
+                continue
+            tokens = e.get("tokens") or sum(e.get(k) or 0 for k in (
+                "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
+            row = totals.setdefault((e["engine"], e["role"]), [0, 0, 0.0])
+            row[0] += 1
+            row[1] += tokens or 0
+            row[2] += e.get("cost_usd") or 0
+        if totals:
+            print("today (calls, tokens):")
+            for (engine, role), (calls, tokens, cost) in sorted(totals.items(), key=lambda x: -x[1][1]):
+                print(f"  {engine:6s} {role:18s} {calls:4d} calls {tokens:>12,} tokens"
+                      + (f"  ${cost:.2f}" if cost else ""))
         print("recent calls:")
         for raw in log.read_text(encoding="utf-8").splitlines()[-8:]:
             e = json.loads(raw)

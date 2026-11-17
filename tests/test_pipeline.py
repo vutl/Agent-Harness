@@ -99,3 +99,29 @@ def test_quota_during_execution_keeps_the_worktree(repo, monkeypatch):
     assert status == "quota" and meta["status"] == "quota"
     from pathlib import Path
     assert Path(meta["worktree"]).exists()
+
+
+def test_fix_rounds_review_only_the_new_diff(repo, monkeypatch):
+    (repo / ".agent-harness").mkdir(exist_ok=True)
+    (repo / ".agent-harness" / "config.toml").write_text('[tests]\ncommand = "true"\n')
+    settings = config.load(repo)
+    prompts = []
+    rounds = []
+
+    def run_role(settings, role, prompt, *, cwd=None, **kwargs):
+        if role == "executor":
+            rounds.append(1)
+            (cwd / f"f{len(rounds)}.py").write_text("1\n")
+            text = "done"
+        else:
+            prompts.append(prompt)
+            first = len(prompts) == 1
+            issue = {"severity": "blocking", "file": "f1.py", "line": 1, "problem": "bug", "fix": "fix it"}
+            text = json.dumps({"verdict": "changes" if first else "approve", "issues": [issue] if first else []})
+        return engines.CallResult(ok=True, text=text, role=role, model="f", account="t", seconds=0, log_path=None)
+
+    monkeypatch.setattr(pipeline, "run_role", run_role)
+    _run, status = pipeline.pipeline(settings, "task", plan_text="plan", run_id="t6")
+    assert status == "ready" and len(rounds) == 2
+    assert "git diff" in prompts[1] and "..HEAD" in prompts[1] and "bug" in prompts[1]
+    assert "Plan it implements" not in prompts[1]

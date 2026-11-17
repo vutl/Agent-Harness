@@ -125,7 +125,8 @@ def make_plan(settings: Settings, task: str, *, run: Run, planner: str, max_roun
     plan = ""
     research_block = f"Research brief (from the web; verify before relying on it):\n{research_brief}" \
         if research_brief else ""
-    for round_number in range(1, max_rounds + 2):
+    plan_rounds = int(settings.section("pipeline").get("plan_rounds", 2))
+    for round_number in range(1, plan_rounds + 1):
         try:
             result = run_role(settings, planner, prompt("plan", settings, task=task, feedback=feedback,
                                                         research=research_block),
@@ -179,7 +180,9 @@ def execute(settings: Settings, *, run: Run, task: str, plan: str, executor: str
     tests = tests_command(settings, tests_override) or "no test command configured"
     feedback = ""
     status = "changes"
+    open_issues: list[dict[str, Any]] = []
     for round_number in range(1, max_rounds + 2):
+        round_start = gitops.git("rev-parse", "HEAD", cwd=worktree)
         result = run_role(settings, executor,
                           prompt("execute", settings, plan=plan, feedback=feedback, tests=tests, protect=protect),
                           cwd=worktree, log_dir=run.dir, add_dirs=[settings.root / ".git"], timeout=5400,
@@ -190,9 +193,15 @@ def execute(settings: Settings, *, run: Run, task: str, plan: str, executor: str
         unsafe = gitops.unsafe_changes(settings, worktree, base)
         run.log(f"execute round {round_number} ({result.model} via {result.account}): "
                 f"tests {'pass' if passed else 'FAIL'} — {summary}")
+        if round_number == 1 or not open_issues:
+            review_prompt = prompt("review", settings, branch=branch, base=base, task=task, plan=plan, tests=summary)
+        else:
+            # Re-reviewing the whole branch every round costs the most tokens and
+            # finds new nits each time; check the fixes and their side effects.
+            review_prompt = prompt("review_fix", settings, branch=branch, since=round_start, task=task,
+                                   issues=feedback_text(open_issues), tests=summary)
         review = parse_verdict(run_role(
-            settings, "reviewer",
-            prompt("review", settings, branch=branch, base=base, task=task, plan=plan, tests=summary),
+            settings, "reviewer", review_prompt,
             cwd=worktree, schema=VERDICT_SCHEMA, log_dir=run.dir, wait_for_quota=False).text)
         run.save(f"review.r{round_number}.json", json.dumps(review, indent=1))
         issues = blocking(review)
@@ -208,6 +217,7 @@ def execute(settings: Settings, *, run: Run, task: str, plan: str, executor: str
         if not issues:
             status = "ready"
             break
+        open_issues = issues
         feedback = feedback_text(issues)
     commits = gitops.git("log", "--oneline", f"{base}..HEAD", cwd=worktree)
     run.meta(status=status)

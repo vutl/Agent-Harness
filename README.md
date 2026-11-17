@@ -103,6 +103,19 @@ Merging is `manual` by default: the harness opens the PR and stops. Set
 `[git] merge = "auto"` per project to merge after CI passes and the agent review
 has no blocking issues.
 
+## Token cost
+
+Agent sessions re-send their context every turn, so the harness keeps it small:
+
+- `claude -p` roles run without MCP servers and with per-machine prompt sections moved out of
+  the cacheable system prompt; gateway (API-key) roles also run `--bare` (no hooks, plugins,
+  auto-memory or CLAUDE.md discovery). Turn off with `[claude] lean = false`.
+- Plans are short (under ~150 lines) and revised at most once (`[pipeline] plan_rounds`).
+- Fix rounds are reviewed on the new diff and the open findings only, not the whole branch.
+- Point `[project] rules` at short files; long history documents cost tokens in every session.
+- `ah status` shows today's calls and tokens per role (Codex session totals; Claude input,
+  cache and output tokens and cost when the CLI reports them).
+
 ## Development
 
 ```bash

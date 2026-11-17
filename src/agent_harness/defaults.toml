@@ -53,8 +53,16 @@ merge = "manual"
 fix_ci_rounds = 2
 
 [pipeline]
+# Execute → test → review rounds after the first (fix rounds).
 max_rounds = 2
+# Plan drafts in total: the first plus revisions after plan review.
+plan_rounds = 2
 research = false
+
+[claude]
+# Lean claude -p calls: no MCP servers, cache-friendly system prompt, and --bare
+# for gateway (API-key) roles. Turn off if a role needs MCP tools or CLAUDE.md.
+lean = true
 
 # Roles. engine = "codex" | "claude"; `fallback` runs when the engine is out of
 # quota. `web = true` gives the role live web search.

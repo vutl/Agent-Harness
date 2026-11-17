@@ -18,4 +18,6 @@ Write an implementation plan another engineer can execute without asking:
 6. Acceptance: commands to run and their expected result.
 
 If library or API behaviour matters and you have web access, check the current
-documentation and cite it. Output the plan as Markdown only.
+documentation and cite it. Keep the plan short (aim for under 150 lines): name files,
+functions and behaviours; do not paste code or restate the task. Output the plan as
+Markdown only.

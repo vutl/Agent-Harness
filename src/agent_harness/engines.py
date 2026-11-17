@@ -207,6 +207,32 @@ def mark_cooldown(settings: Settings, account_name: str, text: str, seconds: int
     _update_state(settings, apply)
 
 
+_TOKENS_USED_RE = re.compile(r"tokens used\s*\n\s*([\d,]+)", re.IGNORECASE)
+
+
+def codex_tokens(output: str) -> int | None:
+    """Total tokens Codex reports at the end of a session ("tokens used\\n96,489")."""
+    matches = _TOKENS_USED_RE.findall(output or "")
+    return int(matches[-1].replace(",", "")) if matches else None
+
+
+def parse_claude_json(raw: str) -> tuple[str, dict[str, Any], bool]:
+    """(result text, usage, is_error) from ``claude -p --output-format json``.
+    Falls back to the raw text when the output is not that JSON."""
+    try:
+        data = json.loads(raw[raw.index("{"):]) if "{" in raw else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or "result" not in data:
+        return raw, {}, False
+    usage = data.get("usage") or {}
+    summary = {key: usage.get(key) for key in ("input_tokens", "cache_read_input_tokens",
+                                                "cache_creation_input_tokens", "output_tokens")
+               if usage.get(key) is not None}
+    if data.get("total_cost_usd") is not None:
+        summary["cost_usd"] = data["total_cost_usd"]
+    return str(data.get("result") or ""), summary, bool(data.get("is_error"))
+
 # --- codex -------------------------------------------------------------------
 
 def _project_mcp_servers(settings: Settings) -> list[str]:
@@ -276,7 +302,8 @@ def run_codex(settings: Settings, role: str, prompt: str, *, cwd: Path, log_dir:
         auth_failed = not text.strip() and bool(_AUTH_ERROR_RE.search(output))
         _log_call(settings, {"role": role, "engine": "codex", "model": config["model"], "account": account["name"],
                              "seconds": seconds, "ok": code == 0 and bool(text.strip()),
-                             "rate_limited": limited, "auth_failed": auth_failed})
+                             "rate_limited": limited, "auth_failed": auth_failed,
+                             "tokens": codex_tokens(output)})
         if auth_failed:
             mark_cooldown(settings, account["name"], output, AUTH_COOLDOWN_SECONDS)
             continue
@@ -311,14 +338,24 @@ def gateway_env(settings: Settings, name: str) -> dict[str, str]:
             path = settings.root / path
         token = _read_key_file(path, gateway.get("token_key", ""))
     env = {key: value for key, value in os.environ.items() if not key.startswith("ANTHROPIC_")}
-    env.update({"ANTHROPIC_BASE_URL": gateway["base_url"], "ANTHROPIC_AUTH_TOKEN": token,
+    # --bare reads only ANTHROPIC_API_KEY; other modes read ANTHROPIC_AUTH_TOKEN.
+    env.update({"ANTHROPIC_BASE_URL": gateway["base_url"], "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_API_KEY": token,
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"})
     return env
 
 
 def claude_command(settings: Settings, config: dict[str, Any]) -> list[str]:
     command = [binary(settings, "claude"), "-p", "--model", config["model"],
-               "--permission-mode", config.get("permission_mode", "plan"), "--output-format", "text"]
+               "--permission-mode", config.get("permission_mode", "plan"), "--output-format", "json"]
+    if settings.section("claude").get("lean", True):
+        # No MCP servers (their tool schemas ride along on every turn), and
+        # per-machine prompt sections move out of the cacheable system prompt.
+        command += ["--strict-mcp-config", "--exclude-dynamic-system-prompt-sections"]
+        if config.get("gateway"):
+            # Gateway roles authenticate with a key, so they can skip hooks,
+            # plugins, auto-memory and CLAUDE.md discovery (the prompt names the
+            # rule files to read). OAuth roles cannot: --bare never reads OAuth.
+            command.append("--bare")
     tool_sets = settings.section("claude_tool_sets")
     allowed = list(tool_sets.get(config["tool_set"], [])) if config.get("tool_set") else []
     if config.get("web"):
@@ -340,14 +377,15 @@ def run_claude(settings: Settings, role: str, prompt: str, *, cwd: Path, log_dir
     account = f"gateway:{gateway}" if gateway else "claude"
     env = gateway_env(settings, gateway) if gateway else None
     started = time.time()
-    text, err, code = run_cli(command, prompt, timeout=timeout, cwd=cwd, env=env)
-    log_path.write_text(f"{err}\n---\n{text}", encoding="utf-8")
+    raw, err, code = run_cli(command, prompt, timeout=timeout, cwd=cwd, env=env)
+    log_path.write_text(f"{err}\n---\n{raw}", encoding="utf-8")
+    text, usage, is_error = parse_claude_json(raw)
     seconds = round(time.time() - started, 1)
     # Some limits arrive as a normal short reply with exit code 0.
-    limited = bool(_RATE_LIMIT_RE.search(err + text)) and (code != 0 or len(text) < 400)
-    ok = code == 0 and bool(text.strip())
+    limited = bool(_RATE_LIMIT_RE.search(err + text)) and (code != 0 or is_error or len(text) < 400)
+    ok = code == 0 and not is_error and bool(text.strip())
     _log_call(settings, {"role": role, "engine": "claude", "model": config["model"], "account": account,
-                         "seconds": seconds, "ok": ok, "rate_limited": limited})
+                         "seconds": seconds, "ok": ok, "rate_limited": limited, **usage})
     if limited or (gateway and not ok):
         raise QuotaExhausted(f"{account} {config['model']}: {(err or text)[:200]}")
     return CallResult(ok=ok, text=text, role=role, model=config["model"], account=account,

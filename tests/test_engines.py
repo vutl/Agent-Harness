@@ -76,3 +76,25 @@ def test_run_cli_kills_the_whole_process_group_on_timeout(tmp_path):
 def test_run_cli_returns_output_and_code():
     out, err, code = engines.run_cli(["sh", "-c", "cat; echo oops >&2; exit 3"], "hello", timeout=10)
     assert (out, err.strip(), code) == ("hello", "oops", 3)
+
+
+def test_codex_tokens_from_session_footer():
+    assert engines.codex_tokens("...\ntokens used\n96,489\n") == 96489
+    assert engines.codex_tokens("no footer") is None
+
+
+def test_claude_json_result_and_usage():
+    raw = ('{"type":"result","is_error":false,"result":"done","total_cost_usd":0.12,'
+           '"usage":{"input_tokens":10,"cache_read_input_tokens":900,"output_tokens":50}}')
+    text, usage, is_error = engines.parse_claude_json(raw)
+    assert (text, is_error) == ("done", False)
+    assert usage == {"input_tokens": 10, "cache_read_input_tokens": 900, "output_tokens": 50, "cost_usd": 0.12}
+    assert engines.parse_claude_json("plain text") == ("plain text", {}, False)
+
+
+def test_lean_claude_flags(settings, monkeypatch):
+    monkeypatch.setattr(engines, "binary", lambda s, name: f"/bin/{name}")
+    plain = engines.claude_command(settings, settings.role("scout"))
+    assert "--strict-mcp-config" in plain and "--bare" not in plain and "json" in plain
+    gateway = engines.claude_command(settings, {**settings.role("scout"), "gateway": "router"})
+    assert "--bare" in gateway
