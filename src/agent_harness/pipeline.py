@@ -7,6 +7,7 @@ The change is left committed on branch ``<prefix><run>`` in
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import time
@@ -51,6 +52,25 @@ def feedback_text(issues: list[dict[str, Any]]) -> str:
 def tests_command(settings: Settings, override: str | None = None) -> str:
     template = override or str(settings.section("tests").get("command") or "")
     return template.format(root=shlex.quote(str(settings.root))) if template else ""
+
+
+# One failing test per line: pytest "FAILED path::name - msg", go "--- FAIL: Name", jest/vitest "FAIL path".
+FAILURE_LINE = re.compile(r"^(?:FAILED|ERROR) +(\S+)|^--- FAIL: (\S+)|^ *FAIL +(\S+)", re.M)
+
+
+def failing_tests(output: str) -> set[str]:
+    return {next(group for group in match.groups() if group) for match in FAILURE_LINE.finditer(output)}
+
+
+def judge_tests(passed: bool, summary: str, output: str, baseline: set[str]) -> tuple[bool, str, set[str]]:
+    """Pass when every failure was already failing on the base; returns the new failures."""
+    if passed or not baseline:
+        return passed, summary, set()
+    failures = failing_tests(output)
+    new = failures - baseline
+    if failures and not new:
+        return True, f"{summary} (all {len(failures)} failures already fail on the base branch)", set()
+    return False, summary, new
 
 
 def run_tests(settings: Settings, cwd: Path, log: Path, override: str | None = None) -> tuple[bool, str]:
@@ -181,6 +201,15 @@ def execute(settings: Settings, *, run: Run, task: str, plan: str, executor: str
     feedback = ""
     status = "changes"
     open_issues: list[dict[str, Any]] = []
+    # Failures already on the base are not this change's to fix; agents told to
+    # "make the suite pass" otherwise rewrite unrelated tests or fixtures.
+    baseline: set[str] = set()
+    if tests_command(settings, tests_override) and settings.section("tests").get("baseline", True):
+        base_log = run.dir / "tests.base.log"
+        base_passed, base_summary = run_tests(settings, worktree, base_log, tests_override)
+        if not base_passed:
+            baseline = failing_tests(base_log.read_text(encoding="utf-8"))
+            run.log(f"tests on base: FAIL — {base_summary}; {len(baseline)} known failures will not block")
     for round_number in range(1, max_rounds + 2):
         round_start = gitops.git("rev-parse", "HEAD", cwd=worktree)
         result = run_role(settings, executor,
@@ -189,7 +218,9 @@ def execute(settings: Settings, *, run: Run, task: str, plan: str, executor: str
                           wait_for_quota=False)
         run.save(f"execute.r{round_number}.md", result.text)
         stage_and_commit(settings, worktree, f"harness {run.id}: round {round_number}", run)
-        passed, summary = run_tests(settings, worktree, run.dir / f"tests.r{round_number}.log", tests_override)
+        test_log = run.dir / f"tests.r{round_number}.log"
+        passed, summary = run_tests(settings, worktree, test_log, tests_override)
+        passed, summary, new_failures = judge_tests(passed, summary, test_log.read_text(encoding="utf-8"), baseline)
         unsafe = gitops.unsafe_changes(settings, worktree, base)
         run.log(f"execute round {round_number} ({result.model} via {result.account}): "
                 f"tests {'pass' if passed else 'FAIL'} — {summary}")
@@ -212,8 +243,12 @@ def execute(settings: Settings, *, run: Run, task: str, plan: str, executor: str
             issues += [{"severity": "blocking", "file": None, "line": None, "problem": problem, "fix": fix}
                        for problem in unsafe]
         if not passed:
-            issues.append({"severity": "blocking", "file": None, "line": None,
-                           "problem": f"tests fail: {summary}", "fix": "make the test suite pass"})
+            problem = f"tests fail: {summary}"
+            if new_failures:
+                problem += "; new failures (not failing on the base): " + ", ".join(sorted(new_failures)[:20])
+            fix = ("fix these new failures; tests that already fail on the base branch are out of scope"
+                   if baseline else "make the test suite pass")
+            issues.append({"severity": "blocking", "file": None, "line": None, "problem": problem, "fix": fix})
         if not issues:
             status = "ready"
             break

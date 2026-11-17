@@ -30,6 +30,8 @@ notes = ""
 # Runs from the worktree root. Placeholders: {root} = main checkout (quoted).
 command = ""
 timeout = 1800
+# Run the tests on the base first; failures already there do not block a run.
+baseline = true
 
 [worktree]
 # Untracked runtime inputs the tests need, symlinked from the main checkout

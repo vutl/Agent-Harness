@@ -125,3 +125,36 @@ def test_fix_rounds_review_only_the_new_diff(repo, monkeypatch):
     assert status == "ready" and len(rounds) == 2
     assert "git diff" in prompts[1] and "..HEAD" in prompts[1] and "bug" in prompts[1]
     assert "Plan it implements" not in prompts[1]
+
+
+def test_failing_tests_parses_common_runners():
+    output = ("FAILED tests/a.py::test_x - AssertionError\nERROR tests/b.py::test_y\n"
+              "--- FAIL: TestZ (0.00s)\n FAIL src/c.test.ts\nall FAILED here is prose\n")
+    assert pipeline.failing_tests(output) == {"tests/a.py::test_x", "tests/b.py::test_y", "TestZ",
+                                              "src/c.test.ts"}
+
+
+def test_judge_tests_blocks_only_new_failures():
+    old = "FAILED t.py::old - x\n"
+    assert pipeline.judge_tests(False, "1 failed", old, {"t.py::old"})[0] is True
+    passed, _summary, new = pipeline.judge_tests(False, "2 failed", old + "FAILED t.py::new - y\n", {"t.py::old"})
+    assert not passed and new == {"t.py::new"}
+    # Unparseable output or no baseline keeps the old rule: a failing suite blocks.
+    assert pipeline.judge_tests(False, "crash", "Traceback", {"t.py::old"})[0] is False
+    assert pipeline.judge_tests(False, "1 failed", old, set())[0] is False
+
+
+def test_failures_already_on_base_do_not_block(repo, monkeypatch):
+    (repo / ".agent-harness").mkdir()
+    command = ("""sh -c 'echo "FAILED t.py::old - boom"; """
+               """test -f new_fail.py && echo "FAILED t.py::new - boom"; exit 1'""")
+    (repo / ".agent-harness" / "config.toml").write_text(f"[tests]\ncommand = {json.dumps(command)}\n"
+                                                         "[pipeline]\nmax_rounds = 0\n")
+    settings = config.load(repo)
+    fake_roles(monkeypatch, executor_writes=lambda cwd: (cwd / "feature.py").write_text("1\n"))
+    run, status = pipeline.pipeline(settings, "task", plan_text="plan", run_id="t-base")
+    assert status == "ready" and (run.dir / "tests.base.log").exists()
+
+    fake_roles(monkeypatch, executor_writes=lambda cwd: (cwd / "new_fail.py").write_text("1\n"))
+    _run, status = pipeline.pipeline(settings, "task", plan_text="plan", run_id="t-new")
+    assert status == "changes"

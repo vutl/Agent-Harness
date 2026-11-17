@@ -112,6 +112,8 @@ Agent sessions re-send their context every turn, so the harness keeps it small:
   auto-memory or CLAUDE.md discovery). Turn off with `[claude] lean = false`.
 - Plans are short (under ~150 lines) and revised at most once (`[pipeline] plan_rounds`).
 - Fix rounds are reviewed on the new diff and the open findings only, not the whole branch.
+- Tests run once on the base branch first; failures already there do not block the run, so agents
+  don't spend rounds rewriting unrelated tests (`[tests] baseline = false` turns this off).
 - Point `[project] rules` at short files; long history documents cost tokens in every session.
 - `ah status` shows today's calls and tokens per role (Codex session totals; Claude input,
   cache and output tokens and cost when the CLI reports them).
